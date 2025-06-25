@@ -1,0 +1,42 @@
+num_concepts:
+    assist09: 124
+    assist12: 265
+    assist17: 102
+    static2011: 1224
+    kddcup2010: 661
+    synthetic: 50
+
+
+assist09:
+    exercise_size: 17751
+    concept_size: 123
+    student_number: 4163
+
+assist12:
+    exercise_size: 53091
+    concept_size: 265
+    student_number: 29018
+    timeTaken: 2991
+    interval_time: 29617
+    total_inter: 2711813
+
+
+assist17:
+    exercise_size: 3162
+    concept_size: 102
+    student_number: 1709
+    interval_time: 2839
+    timeTaken: 1326
+    total_inter: 942816
+
+
+
+junyi:
+    exercise_size: 25785
+    concept_size: 1326
+    student_number: 72758
+    timeTaken: 1801
+    interval_time: 2878
+    total_inter: 16217311
+
+

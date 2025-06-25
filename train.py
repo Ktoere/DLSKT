@@ -5,8 +5,8 @@
 import argparse
 from sklearn.metrics import roc_auc_score
 import yaml
-from dataloader_cfgkt import Data_set
-from model.tnkt import TNKTnet
+from dataloader import Data_set
+from model.DLSKT import DLSKTnet
 from torch.utils.data import DataLoader
 import numpy as np
 import torch
@@ -211,7 +211,7 @@ if __name__ == "__main__":
     print(f'loading Dataset  {parsers.datasetname}...')
 
 
-    f = open("tnktconf.yml", 'r', encoding='utf-8')
+    f = open("dlsktconf.yml", 'r', encoding='utf-8')
     tnktconf = yaml.safe_load(f.read())
     f = open("dataset.yml", 'r', encoding='utf-8')
     dataset_cof = yaml.safe_load(f.read())
@@ -230,7 +230,7 @@ if __name__ == "__main__":
     test_set = Data_set(path=test_path, max_seq_length=seq_max_length)
     train_loader = DataLoader(train_set, tnktconf["train"]["batch_size"], shuffle=True)
     test_loader = DataLoader(test_set, tnktconf["train"]["batch_size"])
-    kt_model = TNKTnet(exercise_size, concept_size, input_dim,dataset_cof[datasetname.lower()]["timeTaken"],dataset_cof[datasetname.lower()]["interval_time"],tnktconf["train"],dataset_cof[datasetname.lower()])
+    kt_model = DLSKTnet(exercise_size, concept_size, input_dim,dataset_cof[datasetname.lower()]["timeTaken"],dataset_cof[datasetname.lower()]["interval_time"],tnktconf["train"],dataset_cof[datasetname.lower()])
 
 
 
