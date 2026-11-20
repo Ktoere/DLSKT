@@ -3,11 +3,12 @@
 
 
 import argparse
+from pathlib import Path
 from sklearn.metrics import roc_auc_score
 import yaml
 from dataloader import Data_set
 from model.DLSKT import DLSKTnet
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 import numpy as np
 import torch
 import torch.nn as nn
@@ -43,8 +44,15 @@ def compute_accuracy(all_target, all_pred):
     return metrics.accuracy_score(all_target, all_pred)
 
 parser = argparse.ArgumentParser(description='myDemo')
-parser.add_argument('--epochs',type=int,default=30,metavar='N',help='number of epochs to train (defauly 10 )')
+parser.add_argument('--epochs', type=int, default=None, metavar='N',
+                    help='number of epochs to train (default: value in dlsktconf.yml)')
 parser.add_argument('--data_dir', type=str, default='dataset/Processed_data/')
+parser.add_argument('--patience', type=int, default=5,
+                    help='early-stopping patience based on validation loss')
+parser.add_argument('--min_delta', type=float, default=0.0,
+                    help='minimum validation-loss decrease counted as an improvement')
+parser.add_argument('--split_seed', type=int, default=42,
+                    help='random seed used to split validation and test data')
 
 # Press the green button in the gutter to run the script.
 
@@ -207,14 +215,15 @@ if __name__ == "__main__":
 
 
     parsers = parser.parse_args()
+    datasetname = parsers.datasetname
     print("parser:", parsers)
     print(f'loading Dataset  {parsers.datasetname}...')
 
 
-    f = open("dlsktconf.yml", 'r', encoding='utf-8')
-    tnktconf = yaml.safe_load(f.read())
-    f = open("dataset.yml", 'r', encoding='utf-8')
-    dataset_cof = yaml.safe_load(f.read())
+    with open("dlsktconf.yml", 'r', encoding='utf-8') as f:
+        tnktconf = yaml.safe_load(f)
+    with open("dataset.yml", 'r', encoding='utf-8') as f:
+        dataset_cof = yaml.safe_load(f)
     input_dim = tnktconf["train"]["input_dim"]
     student_num = dataset_cof[datasetname.lower()]["student_number"]
     exercise_size = dataset_cof[datasetname.lower()]["exercise_size"]
@@ -222,14 +231,32 @@ if __name__ == "__main__":
     hidden_dim = tnktconf["train"]["hidden_dim"]
     seq_max_length = tnktconf["train"]["max_seq_length"]
 
-
+    seed = tnktconf["train"].get("seed", 42)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
     train_path = parsers.data_dir + parsers.datasetname + parsers.train_file
     test_path = parsers.data_dir + parsers.datasetname + parsers.test_file
     train_set = Data_set(path=train_path, max_seq_length=seq_max_length)
     test_set = Data_set(path=test_path, max_seq_length=seq_max_length)
     train_loader = DataLoader(train_set, tnktconf["train"]["batch_size"], shuffle=True)
-    test_loader = DataLoader(test_set, tnktconf["train"]["batch_size"])
+    total_len = len(test_set)
+    val_len =  total_len // 3
+    test_len = total_len - val_len
+    generator = torch.Generator().manual_seed(parsers.split_seed)
+    val_set, new_test_set = random_split(test_set, [val_len, test_len], generator=generator)
+    val_loader = DataLoader(val_set, batch_size=tnktconf["train"]["batch_size"], shuffle=False)
+    test_loader = DataLoader(new_test_set, batch_size=tnktconf["train"]["batch_size"], shuffle=False)
+    print(f"dataset split: train={len(train_set)}, validation={val_len}, test={test_len}")
+
+    # train_set = Data_set(path=train_path, max_seq_length=seq_max_length)
+    # test_set = Data_set(path=val_path, max_seq_length=seq_max_length)
+    # test_set = Data_set(path=test_path, max_seq_length=seq_max_length)
+    # train_loader = DataLoader(train_set, tnktconf["train"]["batch_size"], shuffle=True)
+    # val_loader = DataLoader(val_set, batch_size=tnktconf["train"]["batch_size"])
+    # test_loader = DataLoader(test_set, batch_size=tnktconf["train"]["batch_size"])
     kt_model = DLSKTnet(exercise_size, concept_size, input_dim,dataset_cof[datasetname.lower()]["timeTaken"],dataset_cof[datasetname.lower()]["interval_time"],tnktconf["train"],dataset_cof[datasetname.lower()])
 
 
@@ -243,36 +270,87 @@ if __name__ == "__main__":
     kt_model.to(device)
     criterion.to(device)
 
-    patience = 5
+    patience = parsers.patience
+    if patience < 1:
+        raise ValueError("--patience must be at least 1")
+
+    max_epochs = parsers.epochs if parsers.epochs is not None else tnktconf["train"]["epoch"]
+    if max_epochs < 1:
+        raise ValueError("--epochs must be at least 1")
+
+    checkpoint_dir = Path(parsers.save_dir_prefix)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = checkpoint_dir / f"DLSKT_best_{datasetname}.pth"
+
     best_val_loss = float('inf')
     patience_counter = 0
-    final_result = {}
+    best_epoch = -1
+    best_val_metrics = None
 
-    for epoch in range(tnktconf["train"]["epoch"]):
+    for epoch in range(max_epochs):
         train_loss, train_acc, train_auc,train_rmse = train(datasetname,kt_model, train_loader,opt,criterion,device)
         scheduler.step()
 
         print(
             "epoch - {} train_loss - {:.2f} acc - {:.4f} auc - {:.4f}  rmse - {:.4f}".format(epoch, train_loss, train_acc, train_auc,train_rmse))
 
-        val_loss, avl_acc, val_auc,val_rmse = test_epoch(datasetname,kt_model,test_loader, criterion, device=device)
-        print("epoch - {} test_loss - {:.2f} acc - {:.4f} auc - {:.4f}  rmse - {:.4f}".format(epoch, val_loss, avl_acc, val_auc,val_rmse))
-        final_result["epoch" + str(epoch)] = [avl_acc, val_auc,val_rmse]
+        val_loss, val_acc, val_auc,val_rmse = test_epoch(datasetname,kt_model,val_loader, criterion, device=device)
+        print("epoch - {} val_loss - {:.2f} acc - {:.4f} auc - {:.4f}  rmse - {:.4f}".format(epoch, val_loss, val_acc, val_auc,val_rmse))
 
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if np.isfinite(val_loss) and val_loss < best_val_loss - parsers.min_delta:
+            best_val_loss = float(val_loss)
+            best_epoch = epoch
+            best_val_metrics = {
+                "loss": float(val_loss),
+                "acc": float(val_acc),
+                "auc": float(val_auc),
+                "rmse": float(val_rmse),
+            }
+            patience_counter = 0
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": kt_model.state_dict(),
+                    "val_metrics": best_val_metrics,
+                    "dataset": datasetname,
+                },
+                checkpoint_path,
+            )
+            print(f"validation loss improved; checkpoint saved to {checkpoint_path}")
         else:
             patience_counter += 1
-
-        # if patience_counter == 3:
-        #     torch.save(kt_model, 'dataset/Processed_data/' + datasetname + '/' + "LSDKT_ALL" + '_' + datasetname + '.pth')
+            print(f"validation loss did not improve ({patience_counter}/{patience})")
 
         if patience_counter >= patience:
-            print("Early stopping triggered")
+            print(f"early stopping triggered at epoch {epoch}; best epoch was {best_epoch}")
             break
 
-    sorted_dict = dict(sorted(final_result.items(), key=lambda item: item[1][1], reverse=True))
-    top_five = list(sorted_dict.items())[:5]
-    print(top_five)
+    if best_epoch < 0:
+        raise RuntimeError("training finished without a finite validation loss; no checkpoint was saved")
+
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    except TypeError:  # Compatibility with older PyTorch versions.
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+    kt_model.load_state_dict(checkpoint["model_state_dict"])
+    print(
+        "restored best checkpoint: epoch - {} val_loss - {:.4f} acc - {:.4f} "
+        "auc - {:.4f} rmse - {:.4f}".format(
+            best_epoch,
+            best_val_metrics["loss"],
+            best_val_metrics["acc"],
+            best_val_metrics["auc"],
+            best_val_metrics["rmse"],
+        )
+    )
+
+    test_loss, test_acc, test_auc, test_rmse = test_epoch(
+        datasetname, kt_model, test_loader, criterion, device=device
+    )
+    print(
+        "final test: loss - {:.4f} acc - {:.4f} auc - {:.4f} rmse - {:.4f}".format(
+            test_loss, test_acc, test_auc, test_rmse
+        )
+    )
 
